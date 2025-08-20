@@ -34,18 +34,6 @@ A classic snake game reimagined in a 3D world, built with Three.js. This project
 
 ---
 
-## How to Set Up the Live Demo (GitHub Pages)
-
-You can host this game for free using GitHub Pages.
-
-1.  In your GitHub repository, go to the **"Settings"** tab.
-2.  In the left sidebar, click on **"Pages"**.
-3.  Under the "Build and deployment" section, select the **Source** as **"Deploy from a branch"**.
-4.  Set the **Branch** to **`main`** and the folder to **`/ (root)`**.
-5.  Click **"Save"**.
-
-After a minute or two, your game will be live at `https://guopeng-jiang.github.io/3d-snake-game/`. Don't forget to update the link at the top of this README!
-
 ## How to Run Locally
 
 1.  Clone this repository to your local machine:
