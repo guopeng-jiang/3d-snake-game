@@ -44,4 +44,4 @@ A classic snake game reimagined in a 3D world, built with Three.js. This project
     ```bash
     cd 3d-snake-game
     ```
-3.  Simply open the `SnakeGame.html` file in your web browser.
+3.  Simply open the `index.html` file in your web browser.
