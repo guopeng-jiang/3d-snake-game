@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Snake Game</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            overflow: hidden;
+            background-color: #1a1a1a;
+            color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            height: 100vh;
+        }
+        #game-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        #ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-sizing: border-box;
+            pointer-events: none; /* Allows mouse clicks to pass through to the canvas */
+            z-index: 10;
+        }
+        #score, #controls, #game-buttons {
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px 20px;
+            border-radius: 10px;
+            backdrop-filter: blur(5px);
+            font-size: 1.2em;
+        }
+        #controls {
+            font-size: 0.9em;
+            text-align: right;
+        }
+        #game-buttons button {
+            pointer-events: all;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: background-color 0.3s, transform 0.2s;
+        }
+        #game-buttons button:hover {
+            background-color: #45a049;
+            transform: scale(1.05);
+        }
+        #message-box {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 30px 40px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+            text-align: center;
+            font-size: 1.5em;
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2);
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+            z-index: 20;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui-overlay">
+        <div id="score">Score: 0</div>
+        <div id="controls">
+            Use A to turn left<br>
+            Use D to turn right
+        </div>
+        <div id="game-buttons">
+            <button id="restart-button">Reset</button>
+        </div>
+    </div>
+
+    <div id="message-box">
+        <span id="message-text"></span>
+    </div>
+
+    <div id="game-container"></div>
+
+    <script>
+        // Set up the scene, camera, and renderer
+        const container = document.getElementById('game-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x87CEEB); // Set clear color to a sky blue
+        container.appendChild(renderer.domElement);
+
+        // Game constants
+        const GRID_SIZE = 30;
+        const SEGMENT_SIZE = 0.5; // Snake segments are now smaller
+        const CAMERA_DISTANCE = 5;
+        const CAMERA_HEIGHT = 3;
+
+        // Game state variables
+        let snakeBody = [];
+        let food = null;
+        let barriers = [];
+        let trees = [];
+        let clouds = [];
+        let direction = new THREE.Vector3(1, 0, 0);
+        let score = 0;
+        let isGameOver = false;
+        let lastUpdateTime = 0;
+        let updateInterval = 500;
+
+        // UI elements
+        const scoreElement = document.getElementById('score');
+        const messageBox = document.getElementById('message-box');
+        const messageText = document.getElementById('message-text');
+        const restartButton = document.getElementById('restart-button');
+
+        // Light setup
+        const ambientLight = new THREE.AmbientLight(0x404040, 2);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        directionalLight.position.set(5, 10, 7.5);
+        scene.add(directionalLight);
+
+        // Create the game floor
+        const floorGeometry = new THREE.PlaneGeometry(GRID_SIZE, GRID_SIZE);
+        const floorMaterial = new THREE.MeshLambertMaterial({ color: 0x2e2e2e, side: THREE.DoubleSide });
+        const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+        floor.rotation.x = Math.PI / 2;
+        scene.add(floor);
+
+        /**
+         * Creates a new snake segment mesh.
+         * @param {boolean} isHead - True if the segment is the head of the snake.
+         * @returns {THREE.Mesh} The new segment.
+         */
+        function createSnakeSegment(isHead = false) {
+            const geometry = new THREE.BoxGeometry(SEGMENT_SIZE, SEGMENT_SIZE, SEGMENT_SIZE);
+            const material = new THREE.MeshLambertMaterial({ color: isHead ? 0x6EBE5B : 0x4CAF50 });
+            return new THREE.Mesh(geometry, material);
+        }
+
+        /**
+         * Creates a new barrier mesh that looks like a building.
+         * @returns {THREE.Mesh} The new barrier mesh.
+         */
+        function createBarrier() {
+            const geometry = new THREE.BoxGeometry(SEGMENT_SIZE * 3, SEGMENT_SIZE * 8, SEGMENT_SIZE * 3);
+            const material = new THREE.MeshLambertMaterial({ color: 0x8b8000 });
+            return new THREE.Mesh(geometry, material);
+        }
+        
+        /**
+         * Creates a tree mesh with a trunk and a foliage part.
+         * @returns {THREE.Group} A group containing the tree mesh.
+         */
+        function createTree() {
+            const trunkGeometry = new THREE.CylinderGeometry(0.1, 0.1, 1, 8);
+            const trunkMaterial = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
+            const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+
+            const foliageGeometry = new THREE.ConeGeometry(0.5, 1, 16);
+            const foliageMaterial = new THREE.MeshLambertMaterial({ color: 0x228B22 });
+            const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
+            foliage.position.y = 1;
+
+            const tree = new THREE.Group();
+            tree.add(trunk);
+            tree.add(foliage);
+            return tree;
+        }
+
+        /**
+         * Creates a spherical cloud mesh.
+         * @returns {THREE.Mesh} The new cloud mesh.
+         */
+        function createCloud() {
+            const cloudGeometry = new THREE.SphereGeometry(1, 12, 12);
+            const cloudMaterial = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
+            return new THREE.Mesh(cloudGeometry, cloudMaterial);
+        }
+
+        /**
+         * Generates and places a specified number of barriers on the map.
+         * @param {number} count The number of barriers to create.
+         */
+        function createBarriers(count) {
+            barriers.forEach(barrier => scene.remove(barrier));
+            barriers = [];
+
+            for (let i = 0; i < count; i++) {
+                const barrier = createBarrier();
+                let positionFound = false;
+                while (!positionFound) {
+                    const x = Math.floor(Math.random() * GRID_SIZE) - GRID_SIZE / 2 + 0.5;
+                    const z = Math.floor(Math.random() * GRID_SIZE) - GRID_SIZE / 2 + 0.5;
+                    barrier.position.set(x, (SEGMENT_SIZE * 8) / 2, z);
+
+                    // Check for overlap with snake's initial position and other barriers
+                    const isOverlappingSnake = barrier.position.distanceTo(new THREE.Vector3(0, (SEGMENT_SIZE * 8) / 2, 0)) < 2;
+                    const isOverlappingOtherBarriers = barriers.some(b => b.position.distanceTo(barrier.position) < 3);
+
+                    if (!isOverlappingSnake && !isOverlappingOtherBarriers) {
+                        positionFound = true;
+                    }
+                }
+                scene.add(barrier);
+                barriers.push(barrier);
+            }
+        }
+        
+        /**
+         * Generates and places dense trees on the map.
+         * @param {number} count The number of tree meshes to create.
+         */
+        function createTrees(count) {
+            trees.forEach(tree => scene.remove(tree));
+            trees = [];
+
+            for (let i = 0; i < count; i++) {
+                const tree = createTree();
+                let positionFound = false;
+                while (!positionFound) {
+                    const x = Math.random() * GRID_SIZE - GRID_SIZE / 2;
+                    const z = Math.random() * GRID_SIZE - GRID_SIZE / 2;
+                    tree.position.set(x, 0, z);
+
+                    const isOverlappingSnake = tree.position.distanceTo(new THREE.Vector3(0, 0, 0)) < 3;
+                    const isOverlappingBarriers = barriers.some(b => tree.position.distanceTo(b.position) < 2);
+                    const isOverlappingTrees = trees.some(t => tree.position.distanceTo(t.position) < 2);
+
+                    if (!isOverlappingSnake && !isOverlappingBarriers && !isOverlappingTrees) {
+                        positionFound = true;
+                    }
+                }
+                scene.add(tree);
+                trees.push(tree);
+            }
+        }
+
+        /**
+         * Generates and places clouds in the sky.
+         * @param {number} count The number of clouds to create.
+         */
+        function createClouds(count) {
+            clouds.forEach(cloud => scene.remove(cloud));
+            clouds = [];
+
+            for (let i = 0; i < count; i++) {
+                const cloud = createCloud();
+                const x = (Math.random() - 0.5) * GRID_SIZE * 2;
+                const y = 15 + Math.random() * 5; // Place clouds high up
+                const z = (Math.random() - 0.5) * GRID_SIZE * 2;
+                cloud.position.set(x, y, z);
+                scene.add(cloud);
+                clouds.push(cloud);
+            }
+        }
+
+        /**
+         * Creates the food mesh and places it randomly on the grid.
+         */
+        function createFood() {
+            if (food) {
+                scene.remove(food);
+            }
+            // Food size is now based on SEGMENT_SIZE, making it larger.
+            const geometry = new THREE.SphereGeometry(SEGMENT_SIZE, 16, 16); 
+            const material = new THREE.MeshLambertMaterial({ color: 0xFF5733 });
+            food = new THREE.Mesh(geometry, material);
+
+            const x = Math.floor(Math.random() * GRID_SIZE) - GRID_SIZE / 2 + 0.5;
+            const z = Math.floor(Math.random() * GRID_SIZE) - GRID_SIZE / 2 + 0.5;
+            food.position.set(x, SEGMENT_SIZE / 2, z);
+            scene.add(food);
+        }
+
+        /**
+         * Resets the game to its initial state.
+         */
+        function resetGame() {
+            // Remove old snake, food, and barriers
+            snakeBody.forEach(segment => scene.remove(segment));
+            if (food) scene.remove(food);
+            barriers.forEach(barrier => scene.remove(barrier));
+            trees.forEach(tree => scene.remove(tree));
+            clouds.forEach(cloud => scene.remove(cloud));
+
+            // Reset state variables
+            snakeBody = [];
+            direction = new THREE.Vector3(1, 0, 0);
+            score = 0;
+            isGameOver = false;
+            lastUpdateTime = 0;
+
+            // Update UI
+            scoreElement.textContent = `Score: 0`;
+            messageBox.style.display = 'none';
+
+            // Create new snake and food
+            const initialPos = new THREE.Vector3(0, SEGMENT_SIZE / 2, 0);
+            const head = createSnakeSegment(true);
+            head.position.copy(initialPos);
+            snakeBody.push(head);
+            scene.add(head);
+            growSnake(2); // Start with a few segments
+
+            createFood();
+            createBarriers(10); // Create 10 random barriers
+            createTrees(100); // Create 100 tree objects
+            createClouds(50); // Create 50 clouds
+        }
+
+        /**
+         * Adds new segments to the snake's tail.
+         * @param {number} count - The number of segments to add.
+         */
+        function growSnake(count = 1) {
+            for (let i = 0; i < count; i++) {
+                const tail = snakeBody[snakeBody.length - 1];
+                const newSegment = createSnakeSegment();
+                newSegment.position.copy(tail.position);
+                snakeBody.push(newSegment);
+                scene.add(newSegment);
+            }
+        }
+        
+        /**
+         * Handles keyboard input to change the snake's direction instantly.
+         * @param {KeyboardEvent} event - The keyboard event.
+         */
+        function handleKeyDown(event) {
+            const key = event.key.toLowerCase();
+            let newDir = null;
+
+            // Rotate the current direction vector for relative turns
+            if (key === 'a') {
+                const rotationMatrix = new THREE.Matrix4().makeRotationY(Math.PI / 2); // 90 degrees left
+                newDir = direction.clone().applyMatrix4(rotationMatrix).round();
+            } else if (key === 'd') {
+                const rotationMatrix = new THREE.Matrix4().makeRotationY(-Math.PI / 2); // 90 degrees right
+                newDir = direction.clone().applyMatrix4(rotationMatrix).round();
+            }
+
+            if (newDir) {
+                // Prevent reversing direction by checking against the current direction
+                const isOpposite = newDir.clone().add(direction).length() === 0;
+                if (!isOpposite) {
+                    direction.copy(newDir); // Update direction immediately
+                }
+            }
+        }
+
+        /**
+         * Updates the camera position to follow the snake's head.
+         */
+        function updateCamera() {
+            const headPos = snakeBody[0].position;
+            const dir = direction.clone();
+            const cameraPos = headPos.clone().sub(dir.multiplyScalar(CAMERA_DISTANCE)).add(new THREE.Vector3(0, CAMERA_HEIGHT, 0));
+            
+            camera.position.copy(cameraPos);
+            camera.lookAt(headPos);
+        }
+        
+        /**
+         * Main game loop.
+         * @param {number} currentTime - The current timestamp provided by requestAnimationFrame.
+         */
+        function animate(currentTime) {
+            if (isGameOver) {
+                return;
+            }
+
+            requestAnimationFrame(animate);
+            const delta = currentTime - lastUpdateTime;
+
+            if (delta > updateInterval) {
+                lastUpdateTime = currentTime;
+                
+                // Move snake segments
+                for (let i = snakeBody.length - 1; i > 0; i--) {
+                    snakeBody[i].position.copy(snakeBody[i - 1].position);
+                }
+
+                // Move snake head
+                snakeBody[0].position.add(direction);
+
+                // Update snake head color
+                if (snakeBody[0].material.color.getHex() !== 0x6EBE5B) {
+                    snakeBody[0].material.color.setHex(0x6EBE5B);
+                }
+                
+                // Check for collisions
+                checkCollisions();
+            }
+
+            // Always update camera for smooth tracking
+            updateCamera();
+
+            renderer.render(scene, camera);
+        }
+
+        /**
+         * Checks for all game collisions (food, walls, self, and barriers).
+         */
+        function checkCollisions() {
+            const headPos = snakeBody[0].position;
+            
+            // Check for food collision. The collision radius has been increased.
+            if (headPos.distanceTo(food.position) < 1.0) {
+                score++;
+                scoreElement.textContent = `Score: ${score}`;
+                growSnake();
+                createFood();
+            }
+
+            // Check for wall collision
+            if (Math.abs(headPos.x) > GRID_SIZE / 2 || Math.abs(headPos.z) > GRID_SIZE / 2) {
+                endGame("Game Over! You hit a wall.");
+            }
+
+            // Check for self collision
+            for (let i = 1; i < snakeBody.length; i++) {
+                if (headPos.distanceTo(snakeBody[i].position) < SEGMENT_SIZE) {
+                    endGame("Game Over! You ate yourself.");
+                    break;
+                }
+            }
+
+            // Check for barrier collision. Trees no longer have collision.
+            const allStaticObjects = [...barriers]; 
+            for (const obj of allStaticObjects) {
+                if (headPos.distanceTo(obj.position) < 1) { 
+                    endGame("Game Over! You hit an obstacle.");
+                    break;
+                }
+            }
+        }
+        
+        /**
+         * Ends the game and displays a message.
+         * @param {string} message - The game over message to display.
+         */
+        function endGame(message) {
+            isGameOver = true;
+            messageText.textContent = message;
+            messageBox.style.display = 'flex';
+        }
+
+        // Event listeners
+        window.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+        restartButton.addEventListener('click', () => {
+          // Restart the animation loop when the button is clicked
+          resetGame();
+          requestAnimationFrame(animate);
+        });
+
+        // Start the game when the window loads
+        window.onload = function() {
+            resetGame();
+            animate(0);
+        };
+    </script>
+</body>
+</html>

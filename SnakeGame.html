@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Snake Game - Dynamic Weather</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700&display=swap');
+        body {
+            font-family: 'Orbitron', sans-serif;
+            margin: 0;
+            overflow: hidden;
+            background-color: #1a1a1a;
+            color: #fff;
+        }
+        #game-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+        }
+        #ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-sizing: border-box;
+            pointer-events: none;
+            z-index: 10;
+        }
+        #score, #level, #controls, #game-buttons {
+            background-color: rgba(0, 20, 0, 0.6);
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #00ff00;
+            font-size: 1.2em;
+            text-shadow: 0 0 5px #00ff00;
+        }
+        #level {
+            transition: transform 0.2s ease-in-out;
+        }
+        #controls {
+            font-size: 0.9em;
+            text-align: right;
+        }
+        #game-buttons button {
+            pointer-events: all;
+            background-color: #111;
+            color: #00ff00;
+            border: 2px solid #00ff00;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: background-color 0.3s, color 0.3s;
+        }
+        #game-buttons button:hover {
+            background-color: #00ff00;
+            color: #111;
+        }
+        #message-box {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ff0000;
+            font-size: 4em;
+            font-weight: bold;
+            text-shadow: 0 0 15px #ff0000;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+            z-index: 20;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui-overlay">
+        <div id="score">Score: 0</div>
+        <div id="level">Level: 1</div>
+        <div id="controls">
+            A: Turn Left<br>
+            D: Turn Right
+        </div>
+        <div id="game-buttons">
+            <button id="restart-button">Restart</button>
+        </div>
+    </div>
+
+    <div id="message-box">
+        <span id="message-text"></span>
+    </div>
+
+    <div id="game-container"></div>
+
+    <script>
+        // --- Setup ---
+        const container = document.getElementById('game-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        
+        // --- Lights (to be manipulated by weather) ---
+        const ambientLight = new THREE.AmbientLight(0x605080, 0.8);
+        const sunLight = new THREE.DirectionalLight(0xffaa55, 0.6);
+        
+        // --- Game Constants ---
+        const GRID_SIZE = 50;
+        const SEGMENT_RADIUS = 0.4;
+        const CAMERA_DISTANCE = 6;
+        const CAMERA_HEIGHT = 4;
+        let buildingTexture;
+        const LEVEL_CONFIG = {
+            2: { score: 5, speed: 135, addBuildings: 3 }, 3: { score: 10, speed: 120, addBuildings: 4 },
+            4: { score: 15, speed: 105, addBuildings: 4 }, 5: { score: 20, speed: 90, addBuildings: 5 },
+            6: { score: 25, speed: 80, addBuildings: 5 },
+        };
+        const WEATHER_PROFILES = {
+            'Sunny': { sky: 0x87CEEB, fog: 0x87CEEB, ambient: 0x605080, sun: 0xffddaa, sunIntensity: 0.8, particles: null },
+            'Night': { sky: 0x0c0d2e, fog: 0x0c0d2e, ambient: 0x40405c, sun: 0x5a5a88, sunIntensity: 0.4, particles: null },
+            'Rainy': { sky: 0x5a6970, fog: 0x5a6970, ambient: 0x555555, sun: 0x777777, sunIntensity: 0.5, particles: { type: 'rain', count: 2000 } },
+            'Snowy': { sky: 0xbbeeff, fog: 0xbbeeff, ambient: 0x999999, sun: 0xffffff, sunIntensity: 0.7, particles: { type: 'snow', count: 3000 } }
+        };
+
+        // --- Game State ---
+        let snakeBody = [];
+        let food = null;
+        let buildings = [];
+        let foliage = [];
+        let direction = new THREE.Vector3(1, 0, 0);
+        let score = 0, level = 1;
+        let isGameOver = false;
+        let lastUpdateTime = 0;
+        let updateInterval = 150;
+
+        // --- Camera & Weather State ---
+        let lastHeadPos = new THREE.Vector3();
+        let smoothedDirection = new THREE.Vector3();
+        let currentWeather = 'Sunny';
+        let particleSystem = null, particleVertices = [];
+
+        // --- UI Elements ---
+        const scoreElement = document.getElementById('score');
+        const levelElement = document.getElementById('level');
+        const messageBox = document.getElementById('message-box');
+        const messageText = document.getElementById('message-text');
+        const restartButton = document.getElementById('restart-button');
+        
+        // --- Initialization ---
+        init();
+
+        function init() {
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            container.appendChild(renderer.domElement);
+
+            sunLight.position.set(-50, 50, 50);
+            sunLight.castShadow = true;
+            sunLight.shadow.mapSize.width = 2048;
+            sunLight.shadow.mapSize.height = 2048;
+            scene.add(ambientLight, sunLight);
+            
+            const floorGeometry = new THREE.PlaneGeometry(GRID_SIZE, GRID_SIZE);
+            const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x224422 });
+            const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+            floor.rotation.x = -Math.PI / 2;
+            floor.receiveShadow = true;
+            scene.add(floor);
+            
+            buildingTexture = createBuildingTexture();
+            
+            window.addEventListener('keydown', handleKeyDown);
+            window.addEventListener('resize', onWindowResize);
+            restartButton.addEventListener('click', () => { resetGame(); animate(); });
+            
+            resetGame();
+            animate();
+        }
+        
+        // --- Core Game Logic ---
+        function resetGame() {
+            snakeBody.forEach(s => scene.remove(s));
+            if (food) scene.remove(food);
+            buildings.forEach(b => scene.remove(b));
+            foliage.forEach(f => scene.remove(f));
+            
+            snakeBody = [], buildings = [], foliage = [];
+            direction.set(1, 0, 0);
+            score = 0, level = 1;
+            isGameOver = false;
+            lastUpdateTime = performance.now();
+            updateInterval = 150;
+            
+            scoreElement.textContent = `Score: 0`;
+            levelElement.textContent = `Level: 1`;
+            messageBox.style.display = 'none';
+
+            const initialPos = new THREE.Vector3(0, SEGMENT_RADIUS, 0);
+            const head = createSnakeSegment(true);
+            head.position.copy(initialPos);
+            snakeBody.push(head);
+            scene.add(head);
+            growSnake(4);
+
+            lastHeadPos.copy(head.position);
+            smoothedDirection.copy(direction);
+            
+            setWeather('Sunny');
+            createFood();
+            addBuildings(8);
+            generateFoliage(200);
+        }
+
+        function animate() {
+            if (isGameOver) return;
+            requestAnimationFrame(animate);
+            const currentTime = performance.now();
+            const delta = currentTime - lastUpdateTime;
+
+            if (delta > updateInterval) {
+                lastUpdateTime = currentTime - (delta % updateInterval);
+                lastHeadPos.copy(snakeBody[0].position);
+                for (let i = snakeBody.length - 1; i > 0; i--) snakeBody[i].position.copy(snakeBody[i - 1].position);
+                snakeBody[0].position.add(direction.clone().multiplyScalar(SEGMENT_RADIUS * 2));
+                checkCollisions();
+            }
+            
+            updateCamera();
+            if(particleSystem) animateParticles();
+            renderer.render(scene, camera);
+        }
+        
+        // --- Object Creation ---
+        function createSnakeSegment(isHead = false) {
+            const geo = new THREE.SphereGeometry(isHead ? SEGMENT_RADIUS*1.2 : SEGMENT_RADIUS, 16, 12);
+            const mat = new THREE.MeshStandardMaterial({ color: isHead ? 0x6EBE5B : 0x4CAF50, metalness: 0.3, roughness: 0.6 });
+            const seg = new THREE.Mesh(geo, mat);
+            seg.castShadow = true;
+            return seg;
+        }
+        
+        function createFood() {
+            if (food) scene.remove(food);
+            const color = new THREE.Color(0xffff00);
+            const geo = new THREE.ConeGeometry(0.8, 1.5, 8);
+            const mat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 2 });
+            food = new THREE.Mesh(geo, mat);
+            food.castShadow = true;
+            
+            let posFound = false;
+            while(!posFound) {
+                const x = (Math.floor(Math.random()*GRID_SIZE)-GRID_SIZE/2+0.5);
+                const z = (Math.floor(Math.random()*GRID_SIZE)-GRID_SIZE/2+0.5);
+                food.position.set(x, 0.75, z);
+                if (!buildings.some(b => b.position.distanceTo(food.position) < 5)) posFound = true;
+            }
+            scene.add(food);
+        }
+        
+        function createBuildingTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64; canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#444'; ctx.fillRect(0, 0, 64, 128);
+            ctx.fillStyle = '#88aaff';
+            for (let y=8; y<120; y+=24) for (let x=8; x<56; x+=24) if(Math.random()>0.1) ctx.fillRect(x,y,16,16);
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+            return tex;
+        }
+        
+        function addBuildings(count) {
+            for (let i = 0; i < count; i++) {
+                const sizeX = Math.random()*3+2, sizeY = Math.random()*8+5, sizeZ = Math.random()*3+2;
+                const geo = new THREE.BoxGeometry(sizeX, sizeY, sizeZ);
+                const tex = buildingTexture.clone();
+                tex.needsUpdate = true;
+                tex.repeat.set(Math.round(sizeX/4), Math.round(sizeY/4));
+                const mat = new THREE.MeshStandardMaterial({ map: tex });
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.castShadow = true; mesh.receiveShadow = true;
+                let posFound = false;
+                while (!posFound) {
+                    const posX = (Math.random()-0.5)*(GRID_SIZE-sizeX), posZ = (Math.random()-0.5)*(GRID_SIZE-sizeZ);
+                    mesh.position.set(posX, sizeY / 2, posZ);
+                    if (!snakeBody.length || mesh.position.distanceTo(snakeBody[0].position)>10 && !buildings.some(b=>b.position.distanceTo(mesh.position)<8)) posFound=true;
+                }
+                mesh.collisionSize = new THREE.Vector3(sizeX/2, sizeY/2, sizeZ/2);
+                scene.add(mesh); buildings.push(mesh);
+            }
+        }
+
+        function generateFoliage(count) {
+            const dummy = new THREE.Object3D(), tGeo = new THREE.CylinderGeometry(0.1,0.15,1.5), tMat = new THREE.MeshStandardMaterial({color:0x4d2d1a}), lGeo = new THREE.SphereGeometry(1,7,5), lMat = new THREE.MeshStandardMaterial({color:0x225522});
+            const tMesh = new THREE.InstancedMesh(tGeo,tMat,count), lMesh = new THREE.InstancedMesh(lGeo,lMat,count);
+            tMesh.castShadow=true; lMesh.castShadow=true;
+            for (let i=0; i<count; i++) {
+                const posX=(Math.random()-0.5)*GRID_SIZE, posZ=(Math.random()-0.5)*GRID_SIZE, scale=Math.random()*0.4+0.6;
+                dummy.position.set(posX, 0.75*scale, posZ); dummy.scale.set(scale,scale,scale); dummy.updateMatrix();
+                tMesh.setMatrixAt(i,dummy.matrix);
+                dummy.position.y += 1.5*scale; dummy.updateMatrix();
+                lMesh.setMatrixAt(i,dummy.matrix);
+            }
+            scene.add(tMesh,lMesh); foliage.push(tMesh,lMesh);
+        }
+
+        // --- Game Mechanics & Collision ---
+        function growSnake(count=1) { for (let i=0; i<count; i++) { const tail=snakeBody[snakeBody.length-1], seg=createSnakeSegment(); seg.position.copy(tail.position); snakeBody.push(seg); scene.add(seg); } }
+        
+        function checkCollisions() {
+            const head = snakeBody[0];
+            if (head.position.distanceTo(food.position) < 1.5) {
+                score++; scoreElement.textContent = `Score: ${score}`;
+                growSnake(); createFood();
+                const nextLvl = level+1;
+                if (LEVEL_CONFIG[nextLvl] && score >= LEVEL_CONFIG[nextLvl].score) {
+                    level = nextLvl; updateInterval = LEVEL_CONFIG[level].speed;
+                    addBuildings(LEVEL_CONFIG[level].addBuildings);
+                    levelElement.textContent = `Level: ${level}`;
+                    levelElement.style.transform = 'scale(1.25)';
+                    setTimeout(() => { levelElement.style.transform = 'scale(1)'; }, 250);
+                    // --- WEATHER CHANGE LOGIC ---
+                    if (Math.random() < 0.85) { // 85% chance to change weather
+                        let names = Object.keys(WEATHER_PROFILES), newWeather;
+                        do { newWeather = names[Math.floor(Math.random()*names.length)]; } while (newWeather === currentWeather);
+                        setWeather(newWeather);
+                    }
+                }
+            }
+            if (Math.abs(head.position.x)>GRID_SIZE/2||Math.abs(head.position.z)>GRID_SIZE/2) { endGame("You hit the edge!"); return; }
+            for (let i=4; i<snakeBody.length; i++) if (head.position.distanceTo(snakeBody[i].position)<SEGMENT_RADIUS) { endGame("You ran into yourself!"); return; }
+            for (const b of buildings) {
+                const cP = new THREE.Vector3().copy(head.position).clamp(b.position.clone().sub(b.collisionSize), b.position.clone().add(b.collisionSize));
+                if (head.position.distanceTo(cP)<SEGMENT_RADIUS) { endGame("Crashed into a building!"); return; }
+            }
+        }
+
+        function endGame(message) { isGameOver=true; messageText.textContent=message; messageBox.style.display='flex'; }
+        
+        // --- Controls & Camera ---
+        function handleKeyDown(e) { if(isGameOver)return; const key=e.key.toLowerCase(), rot=new THREE.Matrix4(); if(key==='a')rot.makeRotationY(Math.PI/2); else if(key==='d')rot.makeRotationY(-Math.PI/2); else return; const newDir=direction.clone().applyMatrix4(rot).round(); if(newDir.clone().add(direction).lengthSq()!==0)direction.copy(newDir); }
+        
+        function updateCamera() {
+            if(!snakeBody.length)return; const prog=Math.min((performance.now()-lastUpdateTime)/updateInterval,1.0), iHeadPos=new THREE.Vector3().lerpVectors(lastHeadPos,snakeBody[0].position,prog);
+            smoothedDirection.lerp(direction,0.15);
+            const offset=smoothedDirection.clone().normalize().multiplyScalar(CAMERA_DISTANCE), camTgt=iHeadPos.clone().sub(offset).add(new THREE.Vector3(0,CAMERA_HEIGHT,0));
+            camera.position.lerp(camTgt,0.2); camera.lookAt(iHeadPos);
+        }
+
+        // --- WEATHER SYSTEM ---
+        function setWeather(name) {
+            currentWeather = name;
+            const profile = WEATHER_PROFILES[name];
+            
+            // Smoothly transition colors
+            const startFog = scene.fog ? scene.fog.color.clone() : new THREE.Color(profile.fog);
+            const startSky = scene.background ? scene.background.clone() : new THREE.Color(profile.sky);
+            const transitionProxy = { val: 0 };
+            // A simple animation helper
+            const animateTransition = () => {
+                if (transitionProxy.val < 1) {
+                    transitionProxy.val += 0.02; // Control transition speed
+                    const tempColor = new THREE.Color().lerpColors(startSky, new THREE.Color(profile.sky), transitionProxy.val);
+                    scene.background = tempColor;
+                    if(scene.fog) scene.fog.color.lerpColors(startFog, new THREE.Color(profile.fog), transitionProxy.val);
+                    requestAnimationFrame(animateTransition);
+                }
+            }
+            animateTransition();
+
+            if (!scene.fog) scene.fog = new THREE.Fog(profile.fog, 0, 150);
+            
+            ambientLight.color.setHex(profile.ambient);
+            sunLight.color.setHex(profile.sun);
+            sunLight.intensity = profile.sunIntensity;
+
+            // Handle Particles
+            if(particleSystem) scene.remove(particleSystem);
+            particleSystem = null;
+            particleVertices = [];
+            if(profile.particles) createParticleSystem(profile.particles);
+        }
+
+        function createParticleSystem({type, count}) {
+            const geo = new THREE.BufferGeometry();
+            const mat = new THREE.PointsMaterial({ size: type === 'rain' ? 0.3 : 0.1, color: type === 'rain' ? 0xaaaaee : 0xffffff, transparent: true, opacity: 0.8 });
+            
+            for (let i = 0; i < count; i++) {
+                const x = Math.random() * GRID_SIZE - GRID_SIZE / 2;
+                const y = Math.random() * 30;
+                const z = Math.random() * GRID_SIZE - GRID_SIZE / 2;
+                particleVertices.push(x, y, z);
+            }
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(particleVertices, 3));
+            particleSystem = new THREE.Points(geo, mat);
+            scene.add(particleSystem);
+        }
+
+        function animateParticles() {
+            const positions = particleSystem.geometry.attributes.position.array;
+            const isRain = currentWeather === 'Rainy';
+            const speedY = isRain ? 0.4 : 0.05;
+            const speedX = isRain ? 0 : 0.01;
+
+            for (let i = 0; i < positions.length; i += 3) {
+                positions[i] += speedX; // Horizontal drift for snow
+                positions[i + 1] -= speedY;
+                if (positions[i + 1] < -5) {
+                    positions[i] = Math.random() * GRID_SIZE - GRID_SIZE / 2;
+                    positions[i + 1] = 20;
+                    positions[i + 2] = Math.random() * GRID_SIZE - GRID_SIZE / 2;
+                }
+            }
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+        }
+
+        function onWindowResize() { camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); }
+    </script>
+</body>
+</html>```
